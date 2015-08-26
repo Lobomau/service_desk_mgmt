@@ -1,0 +1,336 @@
+Private Sub C_Consultar_SLA_OUT_Click()
+
+Dim sqlquery As String
+Dim seconds As Long
+Dim sla As Long
+
+Dim RS As DAO.Recordset
+
+sqlquery = "SELECT dbo_call_req.ref_num AS INC, dbo_call_req.open_date, dbo_call_req.close_date, dbo_pri.sym AS PRI, dbo_ca_contact.last_name AS Servico, dbo_call_req.priority AS SLA, dbo_rootcause.sym AS Root_Cause FROM ((dbo_call_req INNER JOIN dbo_ca_contact ON dbo_call_req.customer = dbo_ca_contact.contact_uuid) INNER JOIN dbo_pri ON dbo_call_req.priority = dbo_pri.enum) INNER JOIN dbo_rootcause ON dbo_call_req.rootcause = dbo_rootcause.id WHERE (((dbo_ca_contact.last_name) Like '*VOZ*' Or (dbo_ca_contact.last_name) Like '*VOIP*' Or (dbo_ca_contact.last_name) Like '*BANDA_LARGA*' Or (dbo_ca_contact.last_name) Like '*REDE_ACESSO*' Or (dbo_ca_contact.last_name) Like '*REDE_ACESSO*') AND ((dbo_rootcause.sym) Like 'PT.*') AND ((Format([dbo_call_req.close_date]/24/60/60-1/24+DateSerial(1970,1,1),'yyyy/mm/dd')) Between '" & Me.open_date & "' And '" & Me.close_date & "') AND ((dbo_call_req.type)='I') AND ((dbo_call_req.status)='CL'));"
+
+Set RS = CurrentDb.OpenRecordset(sqlquery)
+
+CurrentDb.Execute "DELETE * FROM T_SLA_OUT"
+MsgBox ("Tudo apagado no T_SLA_OUT")
+If RS.EOF Then Exit Sub
+   With RS
+      Do Until RS.EOF
+         CurrentDb.Execute "INSERT INTO T_SLA_OUT ([Tipo_Local], [Organizacao], [servico], [Incidente], [PRI], [sla], [open_date], [close_date], [open_time], [Root Cause], [Status]) VALUES ('" & Get_Local(RS!Servico) & "', '" & Get_Organization(RS!Servico) & "','" & RS!Servico & "', '" & RS!INC & "',  '" & RS!pri & "', '" & RS!sla & "'," & RS!open_date & ", " & RS!close_date & ", '" & RS!pri & "', '" & RS!Root_Cause & "', 'Closed')"
+         RS.MoveNext
+      Loop
+   End With
+   MsgBox ("Tudo inserido no T_SLA_OUT, " & RS.RecordCount & " entradas")
+   RS.Close
+   
+Set RS = CurrentDb.OpenRecordset("T_SLA_OUT")
+If RS.EOF Then Exit Sub
+   With RS
+      Do Until RS.EOF
+         RS.Edit
+         RS!data_inicio = Long2Date(RS!open_date)
+         RS!data_fecho = Long2Date(RS!close_date)
+         seconds = Get_Time(RS!Incidente)
+         sla = Get_SLA(RS!Servico, RS!pri)
+            If (seconds > sla) Then
+            RS!sla = 1
+            Else
+            RS!sla = 0
+            End If
+         RS!open_time = Seconds_To_Time(seconds)
+         RS!Servico = Get_Service(RS!Servico)
+         RS.Update
+         RS.MoveNext
+      Loop
+      MsgBox ("Os Tickets que abriram SLA entre" + Me.open_date + " e " + Me.open_date + " encontram-se na tabela T_SLA_OUT")
+   End With
+   RS.Close
+
+End Sub
+
+Public Function Get_SLA(Servico As String, Priority As String) As Long
+    Dim RS_SLA As DAO.Recordset
+    Dim query As String
+    
+    query = "SELECT tempo_reposicao_in FROM dbo_Z_SLA  WHERE Prioridade = " & Priority & " AND category_name = '" & Get_Service(Servico) & "' AND site_id = 400018"
+    
+    Set RS_SLA = CurrentDb.OpenRecordset(query)
+    Get_SLA = RS_SLA.Fields("tempo_reposicao_in")
+    Get_SLA = Get_SLA * 60
+End Function
+
+Public Function Get_Time(id As String)
+
+    CurrentDb.Execute "DELETE * FROM T_ESTADOS"
+    
+    Dim ESTADOS As DAO.Recordset
+    Dim minmax As DAO.Recordset
+    Dim get_estados As String
+    Dim sql1 As String
+    Dim sql2 As String
+    Dim sqlMinMax As String
+    Dim DiffDays As Long
+           
+    sql1 = "SELECT dbo_call_req.ref_num, dbo_z_view_hold_offlinehold.from_val, dbo_z_view_hold_offlinehold.to_val, dbo_z_view_hold_offlinehold.from_time, dbo_z_view_hold_offlinehold.to_time, dbo_ca_contact.last_name FROM (dbo_call_req INNER JOIN dbo_z_view_hold_offlinehold ON dbo_call_req.persid=dbo_z_view_hold_offlinehold.audobj_uniqueid) INNER JOIN dbo_ca_contact ON dbo_call_req.customer=dbo_ca_contact.contact_uuid WHERE (((dbo_call_req.ref_num)='" & id & "') AND ((dbo_z_view_hold_offlinehold.from_val)='Suspend'))"
+    sql2 = "UNION ALL SELECT dbo_call_req.ref_num, dbo_Z_VIEW_AUDIT_STATUS.from_val, dbo_Z_VIEW_AUDIT_STATUS.to_val, dbo_Z_VIEW_AUDIT_STATUS.from_time, dbo_Z_VIEW_AUDIT_STATUS.to_time, dbo_ca_contact.last_name FROM (dbo_call_req INNER JOIN dbo_ca_contact ON dbo_call_req.customer = dbo_ca_contact.contact_uuid) INNER JOIN dbo_Z_VIEW_AUDIT_STATUS ON dbo_call_req.persid = dbo_Z_VIEW_AUDIT_STATUS.audobj_uniqueid WHERE (((dbo_call_req.ref_num)='" & id & "'));"
+                                
+    get_estados = sql1 & sql2
+    Set ESTADOS = CurrentDb.OpenRecordset(get_estados)
+
+'Inserir todos os estados de determinado ticket na tabela T_ESTADOS
+If ESTADOS.EOF Then Exit Function
+   With ESTADOS
+      Do Until ESTADOS.EOF
+         If ESTADOS!to_val = "" Then
+         CurrentDb.Execute "INSERT INTO T_ESTADOS ([ref_num], [from_val], [to_val], [from_time], [to_time], [last_name]) VALUES ('" & ESTADOS!ref_num & "','" & ESTADOS!from_val & "','" & ESTADOS!from_val & "'," & ESTADOS!from_time & "," & ESTADOS!from_time & ",'" & ESTADOS!last_name & "')"
+         Else
+         CurrentDb.Execute "INSERT INTO T_ESTADOS ([ref_num], [from_val], [to_val], [from_time], [to_time], [last_name]) VALUES ('" & ESTADOS!ref_num & "','" & ESTADOS!from_val & "','" & ESTADOS!to_val & "'," & ESTADOS!from_time & "," & ESTADOS!to_time & ",'" & ESTADOS!last_name & "')"
+         End If
+         ESTADOS.MoveNext
+      Loop
+   End With
+   ESTADOS.Close
+   
+Set ESTADOS = CurrentDb.OpenRecordset("T_ESTADOS")
+
+If ESTADOS.EOF Then Exit Function
+   With ESTADOS
+      Do Until ESTADOS.EOF
+         ESTADOS.Edit
+         ESTADOS!from_date = Cut_Time(ESTADOS!from_time, ESTADOS!to_time, ESTADOS!from_val)
+         ESTADOS.Update
+         ESTADOS.MoveNext
+      Loop
+   End With
+   ESTADOS.Close
+
+Set ESTADOS = CurrentDb.OpenRecordset("T_ESTADOS")
+
+sqlMinMax = "SELECT Min([T_ESTADOS].[from_time]) AS from_time,Max([T_ESTADOS].[to_time]) AS to_time FROM T_ESTADOS;"
+Set minmax = CurrentDb.OpenRecordset(sqlMinMax)
+CurrentDb.Execute "DELETE * FROM T_MINMAX"
+
+If minmax.EOF Then Exit Function
+   With minmax
+      Do Until minmax.EOF
+         CurrentDb.Execute "INSERT INTO T_MINMAX ([from_time], [to_time]) VALUES ('" & minmax!from_time & "', " & minmax!to_time & ")"
+         minmax.MoveNext
+      Loop
+   End With
+   minmax.Close
+   
+Set minmax = CurrentDb.OpenRecordset("T_MINMAX")
+    If (minmax!from_time < date2epoch(DateValue(Long2Date(minmax!from_time)) + #9:00:00 AM#) And minmax!from_time > date2epoch(DateValue(Long2Date(minmax!from_time - 86400)) + #5:30:00 PM#)) Then
+        minmax.Edit
+        minmax!from_time = date2epoch(DateValue(Long2Date(minmax!from_time)) + #9:00:01 AM#)
+    ElseIf (minmax!from_time > date2epoch(DateValue(Long2Date(minmax!from_time)) + #5:30:00 PM#) And minmax!from_time < date2epoch(DateValue(Long2Date(minmax!from_time + 86400)) + #9:00:00 AM#)) Then
+        minmax.Edit
+        minmax!from_time = date2epoch(DateValue(Long2Date(minmax!from_time)) + #5:30:00 PM#)
+    End If
+    If (minmax!to_time < date2epoch(DateValue(Long2Date(minmax!to_time)) + #9:00:00 AM#)) Then
+        minmax.Edit
+        minmax!to_time = date2epoch(DateValue(Long2Date(minmax!to_time - 86400)) + #5:30:00 PM#)
+    ElseIf (minmax!to_time > date2epoch(DateValue(Long2Date(minmax!to_time)) + #5:30:00 PM#) And minmax!to_time < date2epoch(DateValue(Long2Date(minmax!to_time) + 86400) + #9:00:00 AM#)) Then
+        minmax.Edit
+        minmax!to_time = date2epoch(DateValue(Long2Date(minmax!to_time)) + #5:30:00 PM#)
+    End If
+        Get_Time = minmax!to_time - minmax!from_time
+        DiffDays = DateDiff("d", DateValue(Long2Date(minmax!from_time)), DateValue(Long2Date(minmax!to_time)))
+        
+        Get_Time = Get_Time - (Have_Weekend(DateValue(Long2Date(minmax!from_time)), DateValue(Long2Date(minmax!to_time))) * 30600)
+    
+    If (minmax!from_time > date2epoch(DateValue(Long2Date(minmax!to_time)) + #5:30:00 PM#) And minmax!from_time > date2epoch(DateValue(Long2Date(minmax!to_time + 86400)) + #9:00:00 AM#)) Then
+        Get_Time = Get_Time - ((DiffDays - 1) * 55800)
+    Else
+        Get_Time = Get_Time - (DiffDays * 55800)
+    End If
+    minmax.Close
+    
+
+If ESTADOS.EOF Then Exit Function
+'Aqui só retirar tempo, e não adicionar!
+    With ESTADOS
+        Do Until ESTADOS.EOF
+            If (ESTADOS!from_val = "Work In Progress" Or ESTADOS!from_val = "Open" Or ESTADOS!from_val = "Fix in Progress") Then
+            Get_Time = Get_Time
+            Else
+            Get_Time = Get_Time - ESTADOS!from_date
+            End If
+            ESTADOS.MoveNext
+      Loop
+   End With
+   ESTADOS.Close
+
+End Function
+
+
+Public Function Cut_Time(start As Long, finish As Long, from_val As String) As Long
+    Dim total_time As Long
+    Dim initial As Date
+    Dim final As Date
+    Dim done As Boolean
+    done = False
+    Dim weekend As Long
+    
+    initial = DateValue(Long2Date(start)) + #9:00:00 AM#
+    final = DateValue(Long2Date(start)) + #5:30:00 PM#
+    If (from_val = "Suspend" And start > date2epoch(final)) Then
+        start = date2epoch(final)
+    End If
+    total_time = finish - start
+    weekend = Have_Weekend(DateValue(Long2Date(start)), DateValue(Long2Date(finish))) * 30600
+    total_time = total_time - weekend
+                'Verificar se estado decorreu entre 17:30 e 09:00, se sim Cut_time = 0
+                If ((start < date2epoch(initial) And finish < date2epoch(initial)) Or (start > date2epoch(final) And finish < date2epoch(initial + 1))) Then
+                Cut_Time = 0
+                Else
+                If (start < date2epoch(initial)) Then
+                    start = date2epoch(initial)
+                ElseIf (start > date2epoch(final)) Then
+                    start = date2epoch(initial + 1)
+                End If
+                'Aberto e fechado entre 09:00 e 17:30, se sim Cut_Time = finish-start
+                If (start >= date2epoch(initial) And finish < date2epoch(final) Or total_time = 0) Then
+                    total_time = finish - start
+                    Cut_Time = total_time
+                Else
+                    Do While done = False
+                        initial = DateAdd("d", 1, initial)
+                    
+                        'Entre 17:30 e 09:00
+                        If (finish > date2epoch(final) And finish < date2epoch(initial)) Then
+                            total_time = total_time - (finish - date2epoch(final))
+                            Cut_Time = total_time
+                            done = True
+                        Else
+                            total_time = total_time - 55800
+                            final = DateAdd("d", 1, final)
+                        End If
+                        'Entre 09:00 e 17:30
+                        If (finish < date2epoch(final) And finish > date2epoch(initial)) Then
+                            Cut_Time = total_time
+                            done = True
+                        End If
+                                         
+                    Loop
+                End If
+                End If
+        
+End Function
+
+Public Function Long2Date(lngDate As Long) As Date
+    'Long2Date = lngDate / 86400# + #1/1/1970#
+    Long2Date = DateAdd("s", lngDate, "01/01/1970 00:00:00")
+End Function
+
+Public Function Date2Long(dtmDate As Date) As Long
+    Date2Long = (dtmDate - #1/1/1970#) * 86400
+End Function
+
+Public Function date2epoch(myDate)
+    date2epoch = DateDiff("s", "01/01/1970 00:00:00", myDate)
+End Function
+
+Function Seconds_To_Time(ByVal intSeconds)
+  Dim hours, minutes, seconds
+
+  ' calculates whole hours (like a div operator)
+  hours = intSeconds \ 3600
+
+  ' calculates the remaining number of seconds
+  intSeconds = intSeconds Mod 3600
+
+  ' calculates the whole number of minutes in the remaining number of seconds
+  minutes = intSeconds \ 60
+
+  ' calculates the remaining number of seconds after taking the number of minutes
+  seconds = intSeconds Mod 60
+  
+  'pad 0's
+  hours = String(2 - Len(hours), "0") & hours
+  minutes = String(2 - Len(minutes), "0") & minutes
+  seconds = String(2 - Len(seconds), "0") & seconds
+  ' returns as a string
+  Seconds_To_Time = hours & ":" & minutes & ":" & seconds
+End Function
+
+Function Get_Service(service As String)
+     Get_Service = Mid(service, 9, 20)
+End Function
+
+Function Get_Local(service As String)
+    Dim RS As DAO.Recordset
+    Dim query As String
+    Dim site As String
+    
+    site = Left(service, 7)
+    testCheck = site Like "ALR*"
+    If (testCheck) Then
+    Get_Local = "ALR"
+    ElseIf (site Like "LOT*") Then
+    Get_Local = "LOT"
+    Else
+    query = "SELECT [Q Tipo_Site].Tipo_Site FROM [Q Tipo_Site] WHERE ((([Q Tipo_Site].Site)='" & site & "'));"
+    Set RS = CurrentDb.OpenRecordset(query)
+    Get_Local = RS!Tipo_Site
+    End If
+    
+End Function
+
+Function Get_Organization(service As String)
+    Dim RS As DAO.Recordset
+    Dim query As String
+    Dim site As String
+    site = Left(service, 7)
+    query = "SELECT dbo_ca_contact.last_name As site_name FROM dbo_ca_contact WHERE ((dbo_ca_contact.alternate_identifier)='" & site & "')"
+    Set RS = CurrentDb.OpenRecordset(query)
+    Get_Organization = RS!site_name
+End Function
+
+Function Diff_Days(ByVal DateBeg As Date, ByVal DateEnd As Date) As Integer
+ 
+' Calculates number of days betwwen two dates excluding saturdays and sundays
+ 
+' DiffJour = (DateBeg - DateEnd) - (saturdays + sundays).
+ 
+    On Error GoTo Err_Diff_Days
+ 
+    Dim Diff As Integer
+ 
+' Base difference
+    Diff = DateDiff("d", DateBeg, DateEnd)
+ 
+' Eliminate saturdays and sundays
+    Do While DateBeg <= DateEnd
+        If WeekDay(DateBeg, 7) <= 2 Then
+            Diff = Diff - 1
+        End If
+        DateBeg = DateBeg + 1
+    Loop
+ 
+' In case there is no working day between the two dates.
+    If Diff < 0 Then
+        Diff = 0
+    End If
+ 
+    Diff_Days = Diff
+ 
+    Exit Function
+ 
+Err_Diff_Days:
+    MsgBox Err.Description
+End Function
+
+Function Have_Weekend(ByVal DateBeg As Date, ByVal DateEnd As Date) As Long
+    ' Eliminate saturdays and sundays
+    Have_Weekend = 0
+    Do While DateBeg <= DateEnd
+        If (WeekDay(DateBeg, 7) <= 2) Then
+            Have_Weekend = Have_Weekend + 1
+        End If
+        DateBeg = DateBeg + 1
+    Loop
+ 
+End Function
+
+
+
